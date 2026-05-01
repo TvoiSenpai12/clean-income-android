@@ -2,6 +2,8 @@ package com.cleanincome.android;
 
 import android.app.Activity;
 import android.app.AlertDialog;
+import android.app.DatePickerDialog;
+import android.app.Dialog;
 import android.content.ContentValues;
 import android.content.Intent;
 import android.database.Cursor;
@@ -11,11 +13,15 @@ import android.graphics.Typeface;
 import android.graphics.drawable.GradientDrawable;
 import android.net.Uri;
 import android.os.Bundle;
+import android.text.Editable;
 import android.text.InputType;
+import android.text.TextWatcher;
 import android.util.Log;
 import android.view.Gravity;
 import android.view.View;
 import android.view.ViewGroup;
+import android.view.Window;
+import android.view.WindowManager;
 import android.widget.AdapterView;
 import android.widget.ArrayAdapter;
 import android.widget.CheckBox;
@@ -32,6 +38,8 @@ import org.json.JSONObject;
 import java.io.ByteArrayOutputStream;
 import java.io.InputStream;
 import java.io.OutputStream;
+import java.math.BigDecimal;
+import java.math.RoundingMode;
 import java.nio.charset.StandardCharsets;
 import java.text.NumberFormat;
 import java.time.DayOfWeek;
@@ -74,6 +82,8 @@ public class MainActivity extends Activity {
     private String historyPeriod = "month";
     private String historyKind = "all";
     private boolean screenTransitioning = false;
+    private String addShiftMode = "hourly";
+    private String jobFormType = "hourly";
 
     interface ValueCallback {
         void call(String value);
@@ -170,24 +180,27 @@ public class MainActivity extends Activity {
 
         LinearLayout hero = card();
         hero.setBackground(round(C_INK, dp(20), C_INK, 0));
-        hero.addView(text("Чистыми за период", 14, Color.rgb(204, 251, 241), true));
-        hero.addView(text(money(summary.net, true), 40, Color.WHITE, true));
-        hero.addView(text("Осталось получить " + money(summary.remaining, true) + " · " + one(summary.hours) + " ч", 13, Color.rgb(204, 251, 241), true));
+        hero.addView(text("Чистыми", 14, Color.rgb(204, 251, 241), true));
+        hero.addView(text(money(summary.net, false), 38, Color.WHITE, true), matchWrapTop(dp(2)));
+        hero.addView(text("Начислено: " + money(summary.gross, false) + " · Расходы: " + money(summary.expenses, false) + " · " + one(summary.hours) + " ч", 13, Color.rgb(204, 251, 241), false), matchWrapTop(dp(6)));
         body.addView(hero, matchWrapTop(dp(14)));
 
-        String[] order = settings.homeCardOrder.split(",");
-        for (String cardId : order) {
-            if (cardId.equals("net") && settings.showNetCard) body.addView(metric("Чистый доход", money(summary.net, true), "Начислено минус расходы", C_PRIMARY_SOFT), matchWrapTop(dp(12)));
-            if (cardId.equals("gross") && settings.showGrossCard) body.addView(metric("Начислено", money(summary.gross, true), summary.shiftCount + " смен", Color.rgb(204, 251, 241)), matchWrapTop(dp(12)));
-            if (cardId.equals("expenses") && settings.showExpensesCard) body.addView(metric("Расходы", money(summary.expenses, true), "Все категории", C_NEGATIVE_SOFT), matchWrapTop(dp(12)));
-            if (cardId.equals("remaining") && settings.showRemainingCard) body.addView(metric("Осталось получить", money(summary.remaining, true), "Выплачено " + money(summary.paid, true), C_PRIMARY_SOFT), matchWrapTop(dp(12)));
-            if (cardId.equals("netPerHour") && settings.showNetPerHourCard) body.addView(metric("Чистыми в час", money(summary.netPerHour, true), summary.hours > 0 ? one(summary.hours) + " оплаченных часов" : "Пока без часов", C_WARNING_SOFT), matchWrapTop(dp(12)));
-            if (cardId.equals("goal") && settings.showGoalCard && summary.goalTarget > 0) body.addView(goalCard(summary), matchWrapTop(dp(12)));
+        LinearLayout compact = horizontal();
+        compact.addView(metric("Осталось получить", money(summary.remaining, false), "Выплачено " + money(summary.paid, false), C_PRIMARY_SOFT), weightWrap(1));
+        compact.addView(metric("Чистыми в час", summary.hours > 0 ? money(summary.netPerHour, false) + "/ч" : "0 ₽/ч", summary.hours > 0 ? one(summary.hours) + " ч" : "Пока без часов", C_WARNING_SOFT), weightWrapLeft(1, dp(10)));
+        body.addView(compact, matchWrapTop(dp(12)));
+
+        if (settings.showGoalCard && summary.goalTarget > 0) {
+            body.addView(goalCard(summary), matchWrapTop(dp(12)));
         }
 
         LinearLayout actions = vertical();
-        actions.addView(twoButtons("Добавить смену", () -> showAdd("shift", null), "Добавить доход", () -> showAdd("income", null)), matchWrap());
-        actions.addView(twoButtons("Добавить расход", () -> showAdd("expense", null), "Добавить выплату", () -> showAdd("payout", null)), matchWrapTop(dp(10)));
+        actions.addView(text("Быстрые действия", 18, C_INK, true));
+        LinearLayout actionRow = horizontal();
+        actionRow.addView(button("+ Смена", C_PRIMARY, Color.WHITE, () -> showAdd("shift", null)), weightWrap(1));
+        actionRow.addView(button("+ Расход", C_SURFACE, C_INK, () -> showAdd("expense", null)), weightWrapLeft(1, dp(8)));
+        actionRow.addView(button("+ Выплата", C_SURFACE, C_INK, () -> showAdd("payout", null)), weightWrapLeft(1, dp(8)));
+        actions.addView(actionRow, matchWrapTop(dp(10)));
         body.addView(actions, matchWrapTop(dp(16)));
 
         if (settings.showRecentActivity) {
@@ -197,7 +210,7 @@ public class MainActivity extends Activity {
             if (items.isEmpty()) {
                 recent.addView(empty("Записей пока нет", "Добавьте смену, доход, расход или выплату."));
             } else {
-                for (int i = 0; i < Math.min(4, items.size()); i++) {
+                for (int i = 0; i < Math.min(3, items.size()); i++) {
                     recent.addView(activityRow(items.get(i), false));
                 }
             }
@@ -211,10 +224,18 @@ public class MainActivity extends Activity {
         loadSettings();
         ArrayList<Job> jobs = jobs(false);
         Prefill prefill = prefill(kind, editId, jobs);
+        if (editId == null && kind.equals("shift")) {
+            if (addShiftMode == null || addShiftMode.isEmpty()) addShiftMode = jobs.isEmpty() ? "hourly" : jobPaymentType(jobs.get(0).type);
+            prefill.paymentType = addShiftMode;
+        }
+        if (editId != null && prefill.kind.equals("shift")) addShiftMode = prefill.paymentType;
         LinearLayout body = vertical();
 
         final String[] selectedKind = {prefill.kind};
-        body.addView(spinner(new String[]{"Смена", "Доход", "Расход", "Выплата"}, new String[]{"shift", "income", "expense", "payout"}, selectedKind[0], value -> showAdd(value, null)), matchWrap());
+        body.addView(spinner(new String[]{"Смена", "Доход", "Расход", "Выплата"}, new String[]{"shift", "income", "expense", "payout"}, selectedKind[0], value -> {
+            selectedKind[0] = value;
+            showAdd(value, null);
+        }), matchWrap());
 
         final String[] selectedJob = {prefill.jobId};
         if (!jobs.isEmpty() || selectedKind[0].equals("expense") || selectedKind[0].equals("payout")) {
@@ -234,38 +255,61 @@ public class MainActivity extends Activity {
             body.addView(empty("Нет активных работ", "Создайте работу на экране «Еще» → «Работы»."));
         }
 
-        EditText date = input(prefill.date, "2026-05-01", InputType.TYPE_CLASS_DATETIME);
+        EditText date = dateInput(prefill.date);
         EditText start = input(prefill.startTime, "09:00", InputType.TYPE_CLASS_DATETIME);
         EditText end = input(prefill.endTime, "18:00", InputType.TYPE_CLASS_DATETIME);
         EditText breakMinutes = input(prefill.breakMinutes, "0", InputType.TYPE_CLASS_NUMBER);
         CheckBox breakPaid = check("Перерыв оплачивается", prefill.isBreakPaid);
         final String[] paymentType = {prefill.paymentType};
-        Spinner paymentSpinner = spinner(new String[]{"Почасовая", "Фикс", "Заказы"}, new String[]{"hourly", "fixed", "orders"}, paymentType[0], value -> paymentType[0] = value);
+        Spinner paymentSpinner = spinner(new String[]{"Почасовая", "Фикс", "Курьер / заказы", "Вручную"}, new String[]{"hourly", "fixed", "orders", "manual"}, paymentType[0], value -> {
+            addShiftMode = value;
+            showAdd("shift", null);
+        });
         final String[] payoutType = {prefill.payoutType};
         Spinner payoutSpinner = spinner(new String[]{"Выплата", "Аванс", "Коррекция"}, new String[]{"payout", "advance", "correction"}, payoutType[0], value -> payoutType[0] = value);
         final String[] category = {prefill.category};
         Spinner categorySpinner = spinner(expenseLabelArray(), expenseValueArray(), category[0], value -> category[0] = value);
 
-        EditText hourly = input(prefill.hourlyRate, "350", InputType.TYPE_CLASS_NUMBER | InputType.TYPE_NUMBER_FLAG_DECIMAL);
-        EditText fixed = input(prefill.fixedAmount, "3000", InputType.TYPE_CLASS_NUMBER | InputType.TYPE_NUMBER_FLAG_DECIMAL);
-        EditText amount = input(prefill.amount, "0", InputType.TYPE_CLASS_NUMBER | InputType.TYPE_NUMBER_FLAG_DECIMAL);
-        EditText tips = input(prefill.tips, "0", InputType.TYPE_CLASS_NUMBER | InputType.TYPE_NUMBER_FLAG_DECIMAL);
-        EditText bonus = input(prefill.bonus, "0", InputType.TYPE_CLASS_NUMBER | InputType.TYPE_NUMBER_FLAG_DECIMAL);
-        EditText penalty = input(prefill.penalty, "0", InputType.TYPE_CLASS_NUMBER | InputType.TYPE_NUMBER_FLAG_DECIMAL);
+        EditText hourly = input(prefill.hourlyRate, "350", InputType.TYPE_CLASS_TEXT);
+        EditText fixed = input(prefill.fixedAmount, "3000", InputType.TYPE_CLASS_TEXT);
+        EditText amount = input(prefill.amount, "0", InputType.TYPE_CLASS_TEXT);
+        EditText manualHours = input(prefill.manualHours, "Необязательно", InputType.TYPE_CLASS_TEXT);
+        EditText ordersCount = input(prefill.ordersCount, "10", InputType.TYPE_CLASS_NUMBER);
+        EditText shiftExpense = input(prefill.shiftExpenseAmount, "0", InputType.TYPE_CLASS_TEXT);
+        EditText tips = input(prefill.tips, "0", InputType.TYPE_CLASS_TEXT);
+        EditText bonus = input(prefill.bonus, "0", InputType.TYPE_CLASS_TEXT);
+        EditText penalty = input(prefill.penalty, "0", InputType.TYPE_CLASS_TEXT);
         EditText note = input(prefill.note, "Необязательно", InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_FLAG_MULTI_LINE);
         note.setMinLines(2);
 
         LinearLayout form = card();
         form.addView(labeled("Дата", date));
+        form.addView(dateQuickRow(date), matchWrapTop(dp(8)));
         if (selectedKind[0].equals("shift")) {
-            form.addView(labeled("Тип оплаты", paymentSpinner));
-            form.addView(twoFields("Начало", start, "Конец", end), matchWrapTop(dp(10)));
-            form.addView(labeled("Перерыв, мин", breakMinutes), matchWrapTop(dp(10)));
-            form.addView(breakPaid, matchWrapTop(dp(8)));
-            form.addView(twoFields("Ставка в час", hourly, "Фикс за смену", fixed), matchWrapTop(dp(10)));
-            form.addView(labeled("Сумма заказов", amount), matchWrapTop(dp(10)));
+            form.addView(labeled("Тип расчета", paymentSpinner), matchWrapTop(dp(10)));
+            if (paymentType[0].equals("hourly")) {
+                form.addView(twoFields("Начало", start, "Конец", end), matchWrapTop(dp(10)));
+                form.addView(labeled("Перерыв, минут", breakMinutes), matchWrapTop(dp(10)));
+                form.addView(breakPaid, matchWrapTop(dp(8)));
+                form.addView(labeled("Ставка в час", hourly), matchWrapTop(dp(10)));
+                form.addView(twoFields("Чаевые", tips, "Бонус", bonus), matchWrapTop(dp(10)));
+                form.addView(labeled("Штраф", penalty), matchWrapTop(dp(10)));
+            } else if (paymentType[0].equals("fixed")) {
+                form.addView(twoFields("Начало", start, "Конец", end), matchWrapTop(dp(10)));
+                form.addView(labeled("Фикс за смену", fixed), matchWrapTop(dp(10)));
+                form.addView(twoFields("Чаевые", tips, "Бонус", bonus), matchWrapTop(dp(10)));
+                form.addView(labeled("Штраф", penalty), matchWrapTop(dp(10)));
+            } else if (paymentType[0].equals("orders")) {
+                form.addView(twoFields("Начало", start, "Конец", end), matchWrapTop(dp(10)));
+                form.addView(twoFields("Количество заказов", ordersCount, "Расходы за смену", shiftExpense), matchWrapTop(dp(10)));
+                form.addView(labeled("Начислено сервисом", amount), matchWrapTop(dp(10)));
+                form.addView(twoFields("Доп. чаевые", tips, "Бонус", bonus), matchWrapTop(dp(10)));
+                form.addView(labeled("Штраф", penalty), matchWrapTop(dp(10)));
+            } else {
+                form.addView(twoFields("Сумма дохода", amount, "Часы", manualHours), matchWrapTop(dp(10)));
+            }
         } else if (selectedKind[0].equals("income")) {
-            form.addView(labeled("Сумма дохода", amount), matchWrapTop(dp(10)));
+            form.addView(twoFields("Сумма дохода", amount, "Часы", manualHours), matchWrapTop(dp(10)));
         } else if (selectedKind[0].equals("expense")) {
             form.addView(labeled("Сумма расхода", amount), matchWrapTop(dp(10)));
             form.addView(labeled("Категория", categorySpinner), matchWrapTop(dp(10)));
@@ -273,9 +317,13 @@ public class MainActivity extends Activity {
             form.addView(labeled("Сумма выплаты", amount), matchWrapTop(dp(10)));
             form.addView(labeled("Тип выплаты", payoutSpinner), matchWrapTop(dp(10)));
         }
-        if (selectedKind[0].equals("shift") || selectedKind[0].equals("income")) {
-            form.addView(twoFields("Чаевые", tips, "Бонус", bonus), matchWrapTop(dp(10)));
-            form.addView(labeled("Штраф", penalty), matchWrapTop(dp(10)));
+        TextView preview = text("", 14, C_TEXT, false);
+        LinearLayout previewCard = card();
+        previewCard.setBackground(round(C_BG, dp(18), C_BORDER, dp(1)));
+        previewCard.addView(text("Предпросмотр расчета", 16, C_INK, true));
+        previewCard.addView(preview, matchWrapTop(dp(8)));
+        if (selectedKind[0].equals("shift")) {
+            form.addView(previewCard, matchWrapTop(dp(12)));
         }
         form.addView(labeled("Заметка", note), matchWrapTop(dp(10)));
         form.addView(button(editId == null ? "Добавить запись" : "Сохранить изменения", C_PRIMARY, Color.WHITE, () -> {
@@ -283,15 +331,32 @@ public class MainActivity extends Activity {
                 toast("Сначала создайте работу");
                 return;
             }
-            saveRecord(selectedKind[0], editId, selectedJob[0], date.getText().toString(), start.getText().toString(),
+            boolean saved = saveRecord(selectedKind[0], editId, selectedJob[0], date.getText().toString(), start.getText().toString(),
                     end.getText().toString(), breakMinutes.getText().toString(), breakPaid.isChecked(), paymentType[0],
                     payoutType[0], category[0], hourly.getText().toString(), fixed.getText().toString(),
                     amount.getText().toString(), tips.getText().toString(), bonus.getText().toString(),
-                    penalty.getText().toString(), note.getText().toString());
+                    penalty.getText().toString(), ordersCount.getText().toString(), shiftExpense.getText().toString(),
+                    manualHours.getText().toString(), note.getText().toString());
+            if (!saved) return;
             toast(editId == null ? "Запись добавлена" : "Запись обновлена");
             showHome();
         }), matchWrapTop(dp(16)));
         body.addView(form, matchWrapTop(dp(14)));
+        Runnable refresh = () -> refreshShiftPreview(preview, paymentType[0], start, end, breakMinutes, breakPaid, hourly, fixed, amount, tips, bonus, penalty, ordersCount, shiftExpense, manualHours);
+        watch(start, refresh);
+        watch(end, refresh);
+        watch(breakMinutes, refresh);
+        watch(hourly, refresh);
+        watch(fixed, refresh);
+        watch(amount, refresh);
+        watch(tips, refresh);
+        watch(bonus, refresh);
+        watch(penalty, refresh);
+        watch(ordersCount, refresh);
+        watch(shiftExpense, refresh);
+        watch(manualHours, refresh);
+        breakPaid.setOnClickListener(v -> refresh.run());
+        refresh.run();
         setScreen(editId == null ? "Добавить" : "Редактировать", "Смена, доход, расход или выплата", body, "add");
     }
 
@@ -324,6 +389,15 @@ public class MainActivity extends Activity {
         Range range = range("month");
         Summary s = summary(range);
         LinearLayout body = vertical();
+        if (s.shiftCount == 0 && Math.abs(s.expenses) < 0.01 && Math.abs(s.paid) < 0.01) {
+            LinearLayout empty = card();
+            empty.addView(text("Пока нет данных для аналитики.", 18, C_INK, true));
+            empty.addView(text("Добавьте первую смену, расход или выплату — и здесь появятся графики.", 14, C_MUTED, false), matchWrapTop(dp(8)));
+            empty.addView(button("Добавить смену", C_PRIMARY, Color.WHITE, () -> showAdd("shift", null)), matchWrapTop(dp(14)));
+            body.addView(empty);
+            setScreen("Аналитика", "Графики появятся после первых записей", body, "analytics");
+            return;
+        }
         body.addView(twoMetrics("Чистый доход", money(s.net, true), "Выплачено", money(s.paid, true)), matchWrap());
         body.addView(twoMetrics("Смен", String.valueOf(s.shiftCount), "Часов", one(s.hours)), matchWrapTop(dp(10)));
 
@@ -361,9 +435,12 @@ public class MainActivity extends Activity {
     private void showMore() {
         LinearLayout body = vertical();
         LinearLayout list = card();
-        list.addView(navRow("Выплаты", "Начислено, выплачено и остаток", () -> showPayouts()));
         list.addView(navRow("Работы", "Ставки, цвета и архив", () -> showJobs(null)));
+        list.addView(navRow("Выплаты", "Начислено, выплачено и остаток", () -> showPayouts()));
         list.addView(navRow("Настройки", "Карточки, экспорт, импорт и формулы", () -> showSettings()));
+        list.addView(navRow("Экспорт CSV", "Файл для таблиц и резервной проверки", () -> createFile("clean-income.csv", "text/csv", REQ_EXPORT_CSV)));
+        list.addView(navRow("Импорт / резервная копия", "JSON-файл со всеми локальными данными", () -> showSettings()));
+        list.addView(navRow("Архив", "Архивные работы остаются в списке работ", () -> showJobs(null)));
         body.addView(list);
         setScreen("Еще", "Редкие действия отдельно от главного экрана", body, "more");
     }
@@ -395,14 +472,25 @@ public class MainActivity extends Activity {
         for (Job j : allJobs) if (j.id.equals(editId)) edit = j;
         LinearLayout body = vertical();
         EditText name = input(edit == null ? "" : edit.name, "Курьер, такси, кафе", InputType.TYPE_CLASS_TEXT);
-        EditText rate = input(edit == null ? "" : clean(edit.hourlyRate), "350", InputType.TYPE_CLASS_NUMBER | InputType.TYPE_NUMBER_FLAG_DECIMAL);
-        EditText fixed = input(edit == null ? "" : clean(edit.fixed), "3000", InputType.TYPE_CLASS_NUMBER | InputType.TYPE_NUMBER_FLAG_DECIMAL);
-        final String[] type = {edit == null ? "hourly" : edit.type};
+        EditText rate = input(edit == null ? "" : clean(edit.hourlyRate), "350", InputType.TYPE_CLASS_TEXT);
+        EditText fixed = input(edit == null ? "" : clean(edit.fixed), "3000", InputType.TYPE_CLASS_TEXT);
+        final String[] type = {jobFormType};
         final String[] color = {edit == null ? "#14B87A" : edit.color};
         LinearLayout form = card();
         form.addView(labeled("Название", name));
-        form.addView(labeled("Тип расчета", spinner(new String[]{"Часы", "Фикс", "Заказы", "Разное"}, new String[]{"hourly", "fixed", "courier", "mixed"}, type[0], v -> type[0] = v)), matchWrapTop(dp(10)));
-        form.addView(twoFields("Ставка", rate, "Фикс", fixed), matchWrapTop(dp(10)));
+        form.addView(labeled("Тип расчета", spinner(new String[]{"Почасовая", "Фикс", "Курьер / заказы", "Ручной доход"}, new String[]{"hourly", "fixed", "orders", "manual"}, type[0], v -> {
+            jobFormType = v;
+            showJobs(editId);
+        })), matchWrapTop(dp(10)));
+        if (type[0].equals("hourly")) {
+            form.addView(labeled("Ставка по умолчанию", rate), matchWrapTop(dp(10)));
+        } else if (type[0].equals("fixed")) {
+            form.addView(labeled("Фикс по умолчанию", fixed), matchWrapTop(dp(10)));
+        } else if (type[0].equals("orders")) {
+            form.addView(empty("Курьерский режим", "В смене будут доступны заказы, начислено сервисом и расходы за смену."), matchWrapTop(dp(10)));
+        } else {
+            form.addView(empty("Ручной доход", "Ставка и фикс не нужны — в записи вводится готовая сумма."), matchWrapTop(dp(10)));
+        }
         form.addView(labeled("Цвет", spinner(new String[]{"Зеленый", "Темный зеленый", "Желтый", "Синий", "Красный"}, new String[]{"#14B87A", "#0F766E", "#F59E0B", "#4F46E5", "#E25555"}, color[0], v -> color[0] = v)), matchWrapTop(dp(10)));
         final int archivedValue = edit == null ? 0 : edit.archived;
         form.addView(button(edit == null ? "Создать работу" : "Сохранить работу", C_PRIMARY, Color.WHITE, () -> {
@@ -421,9 +509,12 @@ public class MainActivity extends Activity {
             row.addView(dot, box(dp(12), dp(12)));
             LinearLayout texts = vertical();
             texts.addView(text(j.name, 15, C_INK, true));
-            texts.addView(text((j.archived == 1 ? "В архиве" : "Активна") + " · ставка " + clean(j.hourlyRate), 13, C_MUTED, false));
+            texts.addView(text((j.archived == 1 ? "В архиве" : "Активна") + " · " + jobTypeLabel(j.type) + jobRateLabel(j), 13, C_MUTED, false));
             row.addView(texts, weightWrap(1));
-            row.addView(button("Ред.", C_BORDER, C_INK, () -> showJobs(j.id)), wrap());
+            row.addView(button("Ред.", C_BORDER, C_INK, () -> {
+                jobFormType = jobPaymentType(j.type);
+                showJobs(j.id);
+            }), wrap());
             row.addView(button(j.archived == 1 ? "Вернуть" : "Архив", C_BORDER, C_INK, () -> {
                 archiveJob(j.id, j.archived == 1 ? 0 : 1);
                 showJobs(null);
@@ -481,7 +572,7 @@ public class MainActivity extends Activity {
 
         LinearLayout goal = card();
         goal.addView(text("Цель дохода", 18, C_INK, true));
-        EditText target = input(clean(activeGoalTarget()), "80000", InputType.TYPE_CLASS_NUMBER | InputType.TYPE_NUMBER_FLAG_DECIMAL);
+        EditText target = input(clean(activeGoalTarget()), "80000", InputType.TYPE_CLASS_TEXT);
         goal.addView(labeled("Сумма цели на месяц", target), matchWrapTop(dp(10)));
         goal.addView(button("Сохранить цель", C_PRIMARY, Color.WHITE, () -> {
             saveGoal(number(target.getText().toString()));
@@ -507,25 +598,50 @@ public class MainActivity extends Activity {
         setScreen("Настройки", "Карточки, экспорт, импорт и формулы", body, "more");
     }
 
-    private void saveRecord(String kind, String editId, String jobId, String date, String start, String end, String breakMinutes,
+    private boolean saveRecord(String kind, String editId, String jobId, String date, String start, String end, String breakMinutes,
                             boolean breakPaid, String paymentType, String payoutType, String category, String hourly,
-                            String fixed, String amount, String tips, String bonus, String penalty, String note) {
+                            String fixed, String amount, String tips, String bonus, String penalty, String ordersCount,
+                            String shiftExpense, String manualHours, String note) {
         String time = IncomeDb.now();
+        String recordDate = safeDate(date);
+        if (recordDate == null) {
+            toast("Выберите дату");
+            return false;
+        }
         ContentValues values = new ContentValues();
         if (kind.equals("shift") || kind.equals("income")) {
             String id = editId == null ? IncomeDb.id("shift") : editId;
+            String type = kind.equals("income") ? "manual" : paymentType;
+            String startTime;
+            String endTime;
+            if (type.equals("manual")) {
+                double hours = Math.max(0, number(manualHours));
+                startTime = "00:00";
+                int minutes = (int) Math.round(hours * 60);
+                LocalTime endManual = LocalTime.MIDNIGHT.plusMinutes(minutes);
+                endTime = String.format(Locale.US, "%02d:%02d", endManual.getHour(), endManual.getMinute());
+            } else {
+                startTime = cleanTime(start, null);
+                endTime = cleanTime(end, null);
+                if (startTime == null || endTime == null) {
+                    toast("Введите время в формате 16:00");
+                    return false;
+                }
+            }
+            double shiftExpenseValue = type.equals("orders") ? number(shiftExpense) : 0;
             values.put("id", id);
             values.put("jobId", jobId);
-            values.put("date", safeDate(date));
-            values.put("startDateTime", safeDate(date) + " " + cleanTime(start, "09:00"));
-            values.put("endDateTime", safeDate(date) + " " + cleanTime(end, "18:00"));
+            values.put("date", recordDate);
+            values.put("startDateTime", recordDate + " " + startTime);
+            values.put("endDateTime", recordDate + " " + endTime);
             values.put("breakMinutes", (int) number(breakMinutes));
             values.put("isBreakPaid", breakPaid ? 1 : 0);
-            String type = kind.equals("income") ? "manual" : paymentType;
             values.put("paymentType", type);
             values.put("hourlyRate", type.equals("hourly") ? number(hourly) : 0);
             values.put("fixedAmount", type.equals("fixed") ? number(fixed) : 0);
             values.put("grossAmountManual", (type.equals("manual") || type.equals("orders")) ? number(amount) : 0);
+            values.put("ordersCount", type.equals("orders") ? (int) number(ordersCount) : 0);
+            values.put("shiftExpenseAmount", shiftExpenseValue);
             values.put("tips", number(tips));
             values.put("bonus", number(bonus));
             values.put("penalty", number(penalty));
@@ -533,11 +649,25 @@ public class MainActivity extends Activity {
             values.put("createdAt", time);
             values.put("updatedAt", time);
             db.insertWithOnConflict("shifts", null, values, SQLiteDatabase.CONFLICT_REPLACE);
+            db.delete("expenses", "shiftId=?", new String[]{id});
+            if (shiftExpenseValue > 0) {
+                ContentValues expense = new ContentValues();
+                expense.put("id", IncomeDb.id("expense"));
+                expense.put("jobId", jobId);
+                expense.put("shiftId", id);
+                expense.put("date", recordDate);
+                expense.put("amount", shiftExpenseValue);
+                expense.put("category", "other");
+                expense.put("note", "Расходы за смену");
+                expense.put("createdAt", time);
+                expense.put("updatedAt", time);
+                db.insert("expenses", null, expense);
+            }
         } else if (kind.equals("expense")) {
             values.put("id", editId == null ? IncomeDb.id("expense") : editId);
             values.put("jobId", "none".equals(jobId) ? null : jobId);
             values.putNull("shiftId");
-            values.put("date", safeDate(date));
+            values.put("date", recordDate);
             values.put("amount", number(amount));
             values.put("category", category);
             values.put("note", note == null ? "" : note);
@@ -547,7 +677,7 @@ public class MainActivity extends Activity {
         } else if (kind.equals("payout")) {
             values.put("id", editId == null ? IncomeDb.id("payout") : editId);
             values.put("jobId", "none".equals(jobId) ? null : jobId);
-            values.put("date", safeDate(date));
+            values.put("date", recordDate);
             values.put("amount", number(amount));
             values.put("type", payoutType);
             values.put("note", note == null ? "" : note);
@@ -555,6 +685,7 @@ public class MainActivity extends Activity {
             values.put("updatedAt", time);
             db.insertWithOnConflict("payouts", null, values, SQLiteDatabase.CONFLICT_REPLACE);
         }
+        return true;
     }
 
     private void duplicate(ActivityItem item) {
@@ -564,10 +695,12 @@ public class MainActivity extends Activity {
             ContentValues values = new ContentValues();
             String[] names = c.getColumnNames();
             for (String name : names) putFromCursor(values, c, name);
-            values.put("id", IncomeDb.id(item.kind));
+            String newId = IncomeDb.id(item.kind);
+            values.put("id", newId);
             values.put("createdAt", IncomeDb.now());
             values.put("updatedAt", IncomeDb.now());
             db.insert(sourceTable, null, values);
+            if (sourceTable.equals("shifts")) duplicateLinkedExpenses(item.id, newId);
             toast("Запись дублирована");
         }
         c.close();
@@ -577,8 +710,23 @@ public class MainActivity extends Activity {
     private void delete(ActivityItem item) {
         String table = item.kind.equals("expense") ? "expenses" : item.kind.equals("payout") ? "payouts" : "shifts";
         db.delete(table, "id=?", new String[]{item.id});
+        if (table.equals("shifts")) db.delete("expenses", "shiftId=?", new String[]{item.id});
         toast("Удалено");
         showHistory();
+    }
+
+    private void duplicateLinkedExpenses(String sourceShiftId, String newShiftId) {
+        Cursor c = db.rawQuery("SELECT * FROM expenses WHERE shiftId=?", new String[]{sourceShiftId});
+        while (c.moveToNext()) {
+            ContentValues values = new ContentValues();
+            for (String name : c.getColumnNames()) putFromCursor(values, c, name);
+            values.put("id", IncomeDb.id("expense"));
+            values.put("shiftId", newShiftId);
+            values.put("createdAt", IncomeDb.now());
+            values.put("updatedAt", IncomeDb.now());
+            db.insert("expenses", null, values);
+        }
+        c.close();
     }
 
     private Summary summary(Range range) {
@@ -589,7 +737,7 @@ public class MainActivity extends Activity {
             ShiftCalc calc = calcShift(shifts);
             s.gross += calc.gross;
             s.hours += calc.hours;
-            s.shiftCount++;
+            if (!str(shifts, "paymentType").equals("manual")) s.shiftCount++;
         }
         shifts.close();
         Cursor expenses = db.rawQuery("SELECT * FROM expenses", null);
@@ -611,7 +759,7 @@ public class MainActivity extends Activity {
         ShiftCalc calc = new ShiftCalc();
         LocalDateTime start = parseDateTime(str(c, "startDateTime"));
         LocalDateTime end = parseDateTime(str(c, "endDateTime"));
-        if (!end.isAfter(start)) end = end.plusDays(1);
+        if (end.isBefore(start)) end = end.plusDays(1);
         double totalHours = Math.max(0, java.time.Duration.between(start, end).toMinutes() / 60.0);
         String type = str(c, "paymentType");
         boolean standaloneIncome = (type.equals("manual") || type.equals("orders")) && totalHours <= 1.0 / 60.0;
@@ -621,6 +769,8 @@ public class MainActivity extends Activity {
         else if (type.equals("fixed")) calc.base = num(c, "fixedAmount");
         else calc.base = num(c, "grossAmountManual");
         calc.gross = calc.base + num(c, "tips") + num(c, "bonus") - num(c, "penalty");
+        calc.expenses = num(c, "shiftExpenseAmount");
+        calc.net = calc.gross - calc.expenses;
         return calc;
     }
 
@@ -630,15 +780,20 @@ public class MainActivity extends Activity {
         while (shifts.moveToNext()) {
             if (!inRange(str(shifts, "date"), range)) continue;
             String paymentType = str(shifts, "paymentType");
-            String kind = paymentType.equals("manual") || paymentType.equals("orders") ? "income" : "shift";
+            String kind = paymentType.equals("manual") ? "income" : "shift";
             ShiftCalc calc = calcShift(shifts);
-            items.add(new ActivityItem(str(shifts, "id"), kind, str(shifts, "date"), kind.equals("income") ? "Доход" : "Смена", jobName(str(shifts, "jobId")), calc.gross, jobColor(str(shifts, "jobId"))));
+            String details = kind.equals("income") ? "Доход вручную" : timePart(str(shifts, "startDateTime")) + "–" + timePart(str(shifts, "endDateTime")) + " · " + one(calc.hours) + " ч";
+            if (paymentType.equals("orders") && intval(shifts, "ordersCount") > 0) {
+                details += " · " + intval(shifts, "ordersCount") + " заказов";
+            }
+            items.add(new ActivityItem(str(shifts, "id"), kind, str(shifts, "date"), jobName(str(shifts, "jobId")), details, paymentType.equals("orders") ? calc.net : calc.gross, jobColor(str(shifts, "jobId"))));
         }
         shifts.close();
         Cursor expenses = db.rawQuery("SELECT * FROM expenses", null);
         while (expenses.moveToNext()) {
             if (!inRange(str(expenses, "date"), range)) continue;
-            items.add(new ActivityItem(str(expenses, "id"), "expense", str(expenses, "date"), expenseLabel(str(expenses, "category")), jobName(str(expenses, "jobId")), -num(expenses, "amount"), "#E25555"));
+            String note = str(expenses, "note");
+            items.add(new ActivityItem(str(expenses, "id"), "expense", str(expenses, "date"), expenseLabel(str(expenses, "category")), note.isEmpty() ? jobName(str(expenses, "jobId")) : note, -num(expenses, "amount"), "#E25555"));
         }
         expenses.close();
         Cursor payouts = db.rawQuery("SELECT * FROM payouts", null);
@@ -729,6 +884,12 @@ public class MainActivity extends Activity {
             settings.notificationsEnabled = bool(c, "notificationsEnabled");
             settings.hasCompletedOnboarding = bool(c, "hasCompletedOnboarding");
             settings.homeCompactMode = bool(c, "homeCompactMode");
+            if (settings.defaultHomePeriod == null || settings.defaultHomePeriod.isEmpty() || settings.defaultHomePeriod.equals("week")) {
+                settings.defaultHomePeriod = "month";
+            }
+            if (settings.roundingMode == null || settings.roundingMode.isEmpty() || settings.roundingMode.equals("integer")) {
+                settings.roundingMode = "none";
+            }
         }
         c.close();
     }
@@ -761,8 +922,8 @@ public class MainActivity extends Activity {
         v.put("id", editId == null ? IncomeDb.id("job") : editId);
         v.put("name", name.trim());
         v.put("type", type);
-        v.put("defaultHourlyRate", number(rate));
-        v.put("defaultFixedAmount", number(fixed));
+        v.put("defaultHourlyRate", type.equals("hourly") ? number(rate) : 0);
+        v.put("defaultFixedAmount", type.equals("fixed") ? number(fixed) : 0);
         v.put("color", color);
         v.put("currency", settings.currency);
         v.put("isArchived", archived);
@@ -844,6 +1005,9 @@ public class MainActivity extends Activity {
         p.hourlyRate = jobs.isEmpty() ? "" : clean(jobs.get(0).hourlyRate);
         p.fixedAmount = "";
         p.amount = "";
+        p.manualHours = "";
+        p.ordersCount = "";
+        p.shiftExpenseAmount = "";
         p.tips = "";
         p.bonus = "";
         p.penalty = "";
@@ -853,17 +1017,20 @@ public class MainActivity extends Activity {
         Cursor s = db.rawQuery("SELECT * FROM shifts WHERE id=?", new String[]{editId});
         if (s.moveToFirst()) {
             String payment = str(s, "paymentType");
-            p.kind = payment.equals("manual") || payment.equals("orders") ? "income" : "shift";
+            p.kind = payment.equals("manual") ? "income" : "shift";
             p.date = str(s, "date");
             p.jobId = str(s, "jobId");
             p.startTime = timePart(str(s, "startDateTime"));
             p.endTime = timePart(str(s, "endDateTime"));
             p.breakMinutes = String.valueOf(intval(s, "breakMinutes"));
             p.isBreakPaid = intval(s, "isBreakPaid") == 1;
-            p.paymentType = payment.equals("manual") ? "hourly" : payment;
+            p.paymentType = payment;
             p.hourlyRate = clean(num(s, "hourlyRate"));
             p.fixedAmount = clean(num(s, "fixedAmount"));
             p.amount = clean(num(s, "grossAmountManual"));
+            p.manualHours = payment.equals("manual") ? clean(calcShift(s).hours) : "";
+            p.ordersCount = intval(s, "ordersCount") == 0 ? "" : String.valueOf(intval(s, "ordersCount"));
+            p.shiftExpenseAmount = clean(num(s, "shiftExpenseAmount"));
             p.tips = clean(num(s, "tips"));
             p.bonus = clean(num(s, "bonus"));
             p.penalty = clean(num(s, "penalty"));
@@ -914,22 +1081,63 @@ public class MainActivity extends Activity {
         setContentView(root);
     }
 
+    private void showAddSheet() {
+        Dialog dialog = new Dialog(this);
+        LinearLayout sheet = vertical();
+        sheet.setPadding(dp(16), dp(16), dp(16), dp(22));
+        sheet.setBackground(round(C_SURFACE, dp(22), C_BORDER, dp(1)));
+        sheet.addView(text("Добавить", 20, C_INK, true));
+        sheet.addView(navRow("Смена", "Почасовая, фикс, курьерка или вручную", () -> {
+            dialog.dismiss();
+            showAdd("shift", null);
+        }), matchWrapTop(dp(8)));
+        sheet.addView(navRow("Доход", "Разовая сумма без полной смены", () -> {
+            dialog.dismiss();
+            showAdd("income", null);
+        }));
+        sheet.addView(navRow("Расход", "Бензин, связь, комиссия и другое", () -> {
+            dialog.dismiss();
+            showAdd("expense", null);
+        }));
+        sheet.addView(navRow("Выплата", "Полученная выплата или аванс", () -> {
+            dialog.dismiss();
+            showAdd("payout", null);
+        }));
+        dialog.setContentView(sheet);
+        dialog.show();
+        Window window = dialog.getWindow();
+        if (window != null) {
+            window.setBackgroundDrawableResource(android.R.color.transparent);
+            WindowManager.LayoutParams params = new WindowManager.LayoutParams();
+            params.copyFrom(window.getAttributes());
+            params.width = WindowManager.LayoutParams.MATCH_PARENT;
+            params.height = WindowManager.LayoutParams.WRAP_CONTENT;
+            params.gravity = Gravity.BOTTOM;
+            window.setAttributes(params);
+        }
+    }
+
     private LinearLayout bottomNav(String selected) {
         LinearLayout nav = horizontal();
-        nav.setPadding(dp(6), dp(8), dp(6), dp(10));
+        nav.setGravity(Gravity.CENTER_VERTICAL);
+        nav.setPadding(dp(8), dp(8), dp(8), dp(10));
         nav.setBackgroundColor(C_SURFACE);
         nav.addView(tab("Главная", "home", selected, () -> showHome()), weightWrap(1));
         nav.addView(tab("История", "history", selected, () -> showHistory()), weightWrap(1));
-        nav.addView(tab("Добавить", "add", selected, () -> showAdd("shift", null)), weightWrap(1));
+        TextView plus = text("+", 28, Color.WHITE, true);
+        plus.setGravity(Gravity.CENTER);
+        plus.setBackground(round(C_PRIMARY, dp(24), C_PRIMARY, 0));
+        plus.setOnClickListener(v -> navigate(() -> showAddSheet()));
+        nav.addView(plus, boxLeft(dp(52), dp(52), dp(8)));
         nav.addView(tab("Аналитика", "analytics", selected, () -> showAnalytics()), weightWrap(1));
-        nav.addView(tab("Еще", "more", selected, () -> showMore()), weightWrap(1));
+        nav.addView(tab("Ещё", "more", selected, () -> showMore()), weightWrap(1));
         return nav;
     }
 
     private TextView tab(String label, String id, String selected, ClickAction action) {
-        TextView v = text(label, 11, id.equals(selected) ? C_PRIMARY_DARK : C_MUTED, true);
+        TextView v = text(label, 12, id.equals(selected) ? C_PRIMARY_DARK : C_MUTED, true);
         v.setGravity(Gravity.CENTER);
-        v.setPadding(dp(2), dp(10), dp(2), dp(10));
+        v.setPadding(dp(2), dp(12), dp(2), dp(12));
         v.setOnClickListener(view -> navigate(action));
         return v;
     }
@@ -989,7 +1197,9 @@ public class MainActivity extends Activity {
         texts.addView(text(item.title, 15, C_INK, true));
         texts.addView(text(shortDate(item.date) + " · " + item.subtitle, 13, C_MUTED, false));
         row.addView(texts, weightWrapLeft(1, dp(10)));
-        row.addView(text(money(item.amount, true), 14, item.amount < 0 ? C_NEGATIVE : C_INK, true));
+        String amount = money(item.amount, false);
+        if (item.kind.equals("shift") || item.kind.equals("income")) amount += " чистыми";
+        row.addView(text(amount, 14, item.amount < 0 ? C_NEGATIVE : C_INK, true));
         wrap.addView(row, matchWrapTop(dp(10)));
         if (controls) {
             LinearLayout buttons = horizontal();
@@ -1060,6 +1270,115 @@ public class MainActivity extends Activity {
         }));
     }
 
+    private EditText dateInput(String value) {
+        EditText input = input(displayDate(value), "30.04.2026", InputType.TYPE_CLASS_DATETIME);
+        input.setFocusable(false);
+        input.setClickable(true);
+        input.setOnClickListener(v -> openDatePicker(input));
+        return input;
+    }
+
+    private LinearLayout dateQuickRow(EditText date) {
+        LinearLayout row = horizontal();
+        row.addView(button("Сегодня", C_SURFACE, C_INK, () -> date.setText(displayDate(LocalDate.now().format(DATE)))), weightWrap(1));
+        row.addView(button("Вчера", C_SURFACE, C_INK, () -> date.setText(displayDate(LocalDate.now().minusDays(1).format(DATE)))), weightWrapLeft(1, dp(8)));
+        return row;
+    }
+
+    private void openDatePicker(EditText target) {
+        LocalDate selected;
+        try {
+            selected = LocalDate.parse(safeDate(target.getText().toString()), DATE);
+        } catch (Exception e) {
+            selected = LocalDate.now();
+        }
+        DatePickerDialog dialog = new DatePickerDialog(this, (view, year, month, day) -> {
+            LocalDate picked = LocalDate.of(year, month + 1, day);
+            target.setText(displayDate(picked.format(DATE)));
+        }, selected.getYear(), selected.getMonthValue() - 1, selected.getDayOfMonth());
+        dialog.show();
+    }
+
+    private void watch(EditText input, Runnable action) {
+        input.addTextChangedListener(new TextWatcher() {
+            @Override public void beforeTextChanged(CharSequence s, int start, int count, int after) {}
+            @Override public void onTextChanged(CharSequence s, int start, int before, int count) { action.run(); }
+            @Override public void afterTextChanged(Editable s) {}
+        });
+    }
+
+    private void refreshShiftPreview(TextView target, String type, EditText start, EditText end, EditText breakMinutes,
+                                     CheckBox breakPaid, EditText hourly, EditText fixed, EditText amount, EditText tips,
+                                     EditText bonus, EditText penalty, EditText ordersCount, EditText shiftExpense,
+                                     EditText manualHours) {
+        double hours;
+        double gross;
+        double expenses = type.equals("orders") ? number(shiftExpense.getText().toString()) : 0;
+        int orders = type.equals("orders") ? Math.max(0, (int) number(ordersCount.getText().toString())) : 0;
+        if (type.equals("manual")) {
+            hours = Math.max(0, number(manualHours.getText().toString()));
+            gross = number(amount.getText().toString());
+        } else {
+            Double duration = hoursBetween(start.getText().toString(), end.getText().toString());
+            if (duration == null) {
+                target.setText("Введите время в формате 16:00");
+                target.setTextColor(C_NEGATIVE);
+                return;
+            }
+            hours = duration;
+            if (type.equals("hourly") && !breakPaid.isChecked()) {
+                hours = Math.max(0, hours - number(breakMinutes.getText().toString()) / 60.0);
+            }
+            if (type.equals("hourly")) {
+                gross = hours * number(hourly.getText().toString()) + number(tips.getText().toString()) + number(bonus.getText().toString()) - number(penalty.getText().toString());
+            } else if (type.equals("fixed")) {
+                gross = number(fixed.getText().toString()) + number(tips.getText().toString()) + number(bonus.getText().toString()) - number(penalty.getText().toString());
+            } else {
+                gross = number(amount.getText().toString()) + number(tips.getText().toString()) + number(bonus.getText().toString()) - number(penalty.getText().toString());
+            }
+        }
+        double net = gross - expenses;
+        double perHour = hours > 0 ? net / hours : 0;
+        StringBuilder text = new StringBuilder();
+        text.append("Начислено: ").append(money(gross, false)).append("\n");
+        text.append("Расходы: ").append(money(expenses, false)).append("\n");
+        text.append("Чистыми: ").append(money(net, false)).append("\n");
+        text.append("Часы: ").append(one(hours)).append("\n");
+        if (type.equals("orders")) {
+            text.append("Заказов: ").append(orders).append("\n");
+        }
+        text.append("Чистыми в час: ").append(money(perHour, false)).append("/ч");
+        if (type.equals("orders")) {
+            double perOrder = orders > 0 ? net / orders : 0;
+            text.append("\nДоход за заказ: ").append(money(perOrder, false));
+        }
+        target.setTextColor(C_TEXT);
+        target.setText(text.toString());
+    }
+
+    private String jobPaymentType(String type) {
+        if (type == null) return "hourly";
+        if (type.equals("fixed")) return "fixed";
+        if (type.equals("courier") || type.equals("orders")) return "orders";
+        if (type.equals("manual") || type.equals("mixed")) return "manual";
+        return "hourly";
+    }
+
+    private String jobTypeLabel(String type) {
+        String normalized = jobPaymentType(type);
+        if (normalized.equals("fixed")) return "фикс";
+        if (normalized.equals("orders")) return "курьер / заказы";
+        if (normalized.equals("manual")) return "ручной доход";
+        return "почасовая";
+    }
+
+    private String jobRateLabel(Job job) {
+        String type = jobPaymentType(job.type);
+        if (type.equals("hourly") && job.hourlyRate > 0) return " · " + money(job.hourlyRate, false) + "/ч";
+        if (type.equals("fixed") && job.fixed > 0) return " · " + money(job.fixed, false);
+        return "";
+    }
+
     private LinearLayout twoButtons(String a, ClickAction aa, String b, ClickAction bb) {
         LinearLayout row = horizontal();
         row.addView(button(a, C_SURFACE, C_INK, aa), weightWrap(1));
@@ -1100,6 +1419,7 @@ public class MainActivity extends Activity {
         e.setSingleLine((inputType & InputType.TYPE_TEXT_FLAG_MULTI_LINE) == 0);
         e.setInputType(inputType);
         e.setPadding(dp(12), dp(4), dp(12), dp(4));
+        e.setMinHeight(dp(54));
         e.setBackground(round(C_SURFACE, dp(14), C_BORDER, dp(1)));
         return e;
     }
@@ -1122,6 +1442,7 @@ public class MainActivity extends Activity {
         spinner.setSelection(selectedIndex);
         spinner.setBackground(round(C_SURFACE, dp(14), C_BORDER, dp(1)));
         spinner.setPadding(dp(8), 0, dp(8), 0);
+        spinner.setMinimumHeight(dp(54));
         final boolean[] armed = {false};
         spinner.post(() -> armed[0] = true);
         spinner.setOnItemSelectedListener(new AdapterView.OnItemSelectedListener() {
@@ -1238,19 +1559,67 @@ public class MainActivity extends Activity {
     }
 
     private String safeDate(String value) {
+        if (value == null) return null;
         try {
             return LocalDate.parse(value.trim(), DATE).format(DATE);
         } catch (Exception e) {
-            return LocalDate.now().format(DATE);
+            try {
+                DateTimeFormatter display = DateTimeFormatter.ofPattern("dd.MM.yyyy");
+                return LocalDate.parse(value.trim(), display).format(DATE);
+            } catch (Exception ignored) {
+                return null;
+            }
         }
     }
 
     private String cleanTime(String value, String fallback) {
+        String normalized = normalizeTime(value);
+        if (normalized != null) return normalized;
+        return fallback;
+    }
+
+    private String normalizeTime(String value) {
+        if (value == null) return null;
+        String raw = value.trim();
+        if (raw.isEmpty()) return null;
+        raw = raw.replace('.', ':').replace(' ', ':');
+        int hour;
+        int minute;
         try {
-            return LocalTime.parse(value.trim()).toString();
+            if (raw.contains(":")) {
+                String[] parts = raw.split(":");
+                if (parts.length != 2 || parts[0].isEmpty() || parts[1].isEmpty()) return null;
+                hour = Integer.parseInt(parts[0]);
+                minute = Integer.parseInt(parts[1]);
+            } else if (raw.length() <= 2) {
+                hour = Integer.parseInt(raw);
+                minute = 0;
+            } else if (raw.length() == 3) {
+                hour = Integer.parseInt(raw.substring(0, 1));
+                minute = Integer.parseInt(raw.substring(1));
+            } else if (raw.length() == 4) {
+                hour = Integer.parseInt(raw.substring(0, 2));
+                minute = Integer.parseInt(raw.substring(2));
+            } else {
+                return null;
+            }
+            if (hour < 0 || hour > 23 || minute < 0 || minute > 59) return null;
+            return String.format(Locale.US, "%02d:%02d", hour, minute);
         } catch (Exception e) {
-            return fallback;
+            return null;
         }
+    }
+
+    private Double hoursBetween(String startValue, String endValue) {
+        String s = normalizeTime(startValue);
+        String e = normalizeTime(endValue);
+        if (s == null || e == null) return null;
+        LocalTime start = LocalTime.parse(s);
+        LocalTime end = LocalTime.parse(e);
+        int startMinutes = start.getHour() * 60 + start.getMinute();
+        int endMinutes = end.getHour() * 60 + end.getMinute();
+        if (endMinutes < startMinutes) endMinutes += 24 * 60;
+        return Math.max(0, (endMinutes - startMinutes) / 60.0);
     }
 
     private LocalDateTime parseDateTime(String value) {
@@ -1271,7 +1640,7 @@ public class MainActivity extends Activity {
     }
 
     private String money(double value, boolean compact) {
-        double v = value;
+        double v = centsToDouble(cents(String.valueOf(value)));
         if (settings.roundingMode.equals("integer")) v = Math.round(v);
         if (settings.roundingMode.equals("tens")) v = Math.round(v / 10.0) * 10;
         NumberFormat nf = NumberFormat.getCurrencyInstance(new Locale("ru", "RU"));
@@ -1279,7 +1648,8 @@ public class MainActivity extends Activity {
             nf.setCurrency(Currency.getInstance(settings.currency));
         } catch (Exception ignored) {
         }
-        nf.setMaximumFractionDigits(compact || !settings.roundingMode.equals("none") ? 0 : 2);
+        nf.setMinimumFractionDigits(settings.roundingMode.equals("none") ? 2 : 0);
+        nf.setMaximumFractionDigits(settings.roundingMode.equals("none") ? 2 : 0);
         return nf.format(v);
     }
 
@@ -1288,17 +1658,38 @@ public class MainActivity extends Activity {
     }
 
     private double number(String value) {
+        return centsToDouble(cents(value));
+    }
+
+    private long cents(String value) {
         if (value == null) return 0;
+        String normalized = value.trim().replace(" ", "").replace("\u00A0", "").replace(",", ".");
+        if (normalized.isEmpty()) return 0;
         try {
-            return Double.parseDouble(value.trim().replace(",", "."));
+            return new BigDecimal(normalized).setScale(2, RoundingMode.HALF_UP).movePointRight(2).longValue();
         } catch (Exception e) {
             return 0;
         }
     }
 
+    private double centsToDouble(long cents) {
+        return cents / 100.0;
+    }
+
     private String clean(double value) {
         if (Math.abs(value - Math.round(value)) < 0.001) return String.valueOf((long) Math.round(value));
         return String.valueOf(value);
+    }
+
+    private String displayDate(String value) {
+        try {
+            String safe = safeDate(value);
+            if (safe == null) return "";
+            LocalDate d = LocalDate.parse(safe, DATE);
+            return String.format(Locale.US, "%02d.%02d.%04d", d.getDayOfMonth(), d.getMonthValue(), d.getYear());
+        } catch (Exception e) {
+            return "";
+        }
     }
 
     private String str(Cursor c, String col) {
@@ -1643,6 +2034,8 @@ public class MainActivity extends Activity {
         double hours;
         double base;
         double gross;
+        double expenses;
+        double net;
     }
 
     static class Job {
@@ -1712,6 +2105,9 @@ public class MainActivity extends Activity {
         String hourlyRate;
         String fixedAmount;
         String amount;
+        String manualHours;
+        String ordersCount;
+        String shiftExpenseAmount;
         String tips;
         String bonus;
         String penalty;

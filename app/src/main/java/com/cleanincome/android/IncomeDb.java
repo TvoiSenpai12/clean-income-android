@@ -12,7 +12,7 @@ import java.util.UUID;
 
 public class IncomeDb extends SQLiteOpenHelper {
     public static final String DB_NAME = "clean_income_native.db";
-    private static final int DB_VERSION = 1;
+    private static final int DB_VERSION = 2;
 
     public IncomeDb(Context context) {
         super(context, DB_NAME, null, DB_VERSION);
@@ -28,6 +28,7 @@ public class IncomeDb extends SQLiteOpenHelper {
                 "id TEXT PRIMARY KEY, jobId TEXT NOT NULL, date TEXT NOT NULL, startDateTime TEXT NOT NULL, " +
                 "endDateTime TEXT NOT NULL, breakMinutes INTEGER NOT NULL, isBreakPaid INTEGER NOT NULL, " +
                 "paymentType TEXT NOT NULL, hourlyRate REAL, fixedAmount REAL, grossAmountManual REAL, " +
+                "ordersCount INTEGER NOT NULL DEFAULT 0, shiftExpenseAmount REAL NOT NULL DEFAULT 0, " +
                 "tips REAL NOT NULL, bonus REAL NOT NULL, penalty REAL NOT NULL, note TEXT NOT NULL, " +
                 "createdAt TEXT NOT NULL, updatedAt TEXT NOT NULL)");
         db.execSQL("CREATE TABLE expenses (" +
@@ -51,13 +52,10 @@ public class IncomeDb extends SQLiteOpenHelper {
 
     @Override
     public void onUpgrade(SQLiteDatabase db, int oldVersion, int newVersion) {
-        db.execSQL("DROP TABLE IF EXISTS jobs");
-        db.execSQL("DROP TABLE IF EXISTS shifts");
-        db.execSQL("DROP TABLE IF EXISTS expenses");
-        db.execSQL("DROP TABLE IF EXISTS payouts");
-        db.execSQL("DROP TABLE IF EXISTS goals");
-        db.execSQL("DROP TABLE IF EXISTS settings");
-        onCreate(db);
+        if (oldVersion < 2) {
+            safeAlter(db, "ALTER TABLE shifts ADD COLUMN ordersCount INTEGER NOT NULL DEFAULT 0");
+            safeAlter(db, "ALTER TABLE shifts ADD COLUMN shiftExpenseAmount REAL NOT NULL DEFAULT 0");
+        }
     }
 
     public void ensureSeed() {
@@ -128,7 +126,7 @@ public class IncomeDb extends SQLiteOpenHelper {
         values.put("currency", "RUB");
         values.put("themeMode", "light");
         values.put("weekStartDay", 1);
-        values.put("defaultHomePeriod", "week");
+        values.put("defaultHomePeriod", "month");
         values.put("showGrossCard", 1);
         values.put("showExpensesCard", 1);
         values.put("showNetCard", 1);
@@ -138,11 +136,18 @@ public class IncomeDb extends SQLiteOpenHelper {
         values.put("showRecentActivity", 1);
         values.put("homeCardOrder", "net,gross,expenses,remaining,netPerHour,goal");
         values.put("remainingFormulaMode", "gross_minus_payouts");
-        values.put("roundingMode", "integer");
+        values.put("roundingMode", "none");
         values.put("notificationsEnabled", 0);
         values.put("hasCompletedOnboarding", 0);
         values.put("homeCompactMode", 0);
         db.insertWithOnConflict("settings", null, values, SQLiteDatabase.CONFLICT_REPLACE);
+    }
+
+    private void safeAlter(SQLiteDatabase db, String sql) {
+        try {
+            db.execSQL(sql);
+        } catch (Exception ignored) {
+        }
     }
 
     public static String id(String prefix) {
